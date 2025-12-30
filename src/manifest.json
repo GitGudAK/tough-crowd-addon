@@ -1,0 +1,21 @@
+{
+    "testId": "e78e822c-f14d-4d5a-9791-c651b6bbf7f8",
+    "name": "Synthevals Addon",
+    "version": "1.0.0",
+    "manifestVersion": 2,
+    "requirements": {
+        "apps": [
+            {
+                "name": "Express",
+                "apiVersion": 1
+            }
+        ]
+    },
+    "entryPoints": [
+        {
+            "type": "panel",
+            "id": "panel1",
+            "main": "index.html"
+        }
+    ]
+}
