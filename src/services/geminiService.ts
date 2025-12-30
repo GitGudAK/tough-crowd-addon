@@ -183,6 +183,101 @@ export const analyzeVideoFrames = async (apiKey: string, base64Frames: string[])
 };
 
 /**
+ * Step A2: Deep Analyze Full Video (Temporal)
+ * Sends the full video blob to Gemini for native temporal understanding.
+ */
+export const analyzeFullVideo = async (apiKey: string, videoFile: File): Promise<VideoAnalysis> => {
+    if (!apiKey) throw new Error("API Key missing");
+
+    // Convert File to Base64
+    const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(videoFile);
+        reader.onload = () => {
+            const result = reader.result as string;
+            // Remove prefix (e.g. "data:video/mp4;base64,")
+            resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+    });
+
+    // Reuse the same prompt logic but emphasized for full video
+    const prompt = `
+    Analyze this full video to provide a deep content summary and a "Virality Prediction".
+    
+    1. Summarize the event/topic, identifying specific objects, actions, and the visual tone.
+    2. Suggest 5 specific viewer personas who would care about this.
+    3. Analyze "Virality Mechanics":
+       - Score the "Hook" (0-10): How grabbing are the first few seconds?
+       - Score the "Pacing" (0-10): visual variety and speed over time.
+       - Score the "Visuals" (0-10): clarity and aesthetic.
+       - Score the "Audio" potential (0-10): implied audio interest.
+       - Calculate a Total Virality Score (0-100).
+       - Provide 1 sentence of CONSTRUCTIVE feedback.
+  `;
+
+    // Define schema for structured output (Same as frames)
+    const responseSchema: Schema = {
+        type: Type.OBJECT,
+        properties: {
+            summary: { type: Type.STRING },
+            tone: { type: Type.STRING },
+            suggestedPersonas: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+            },
+            virality: {
+                type: Type.OBJECT,
+                properties: {
+                    score: { type: Type.NUMBER },
+                    hookScore: { type: Type.NUMBER },
+                    pacingScore: { type: Type.NUMBER },
+                    visualScore: { type: Type.NUMBER },
+                    audioScore: { type: Type.NUMBER },
+                    feedback: { type: Type.STRING }
+                },
+                required: ['score', 'hookScore', 'pacingScore', 'visualScore', 'audioScore', 'feedback']
+            }
+        },
+        required: ['summary', 'tone', 'suggestedPersonas', 'virality']
+    };
+
+    const attemptAnalysis = async (model: string): Promise<VideoAnalysis> => {
+        const response = await generateContentWithRetry(apiKey, model, {
+            contents: {
+                parts: [
+                    {
+                        inlineData: {
+                            mimeType: videoFile.type || 'video/mp4',
+                            data: base64Data
+                        }
+                    },
+                    { text: prompt }
+                ]
+            },
+            config: {
+                responseMimeType: 'application/json',
+                responseSchema: responseSchema,
+                temperature: 0.4
+            }
+        });
+
+        if (response.text) {
+            return JSON.parse(response.text) as VideoAnalysis;
+        }
+        throw new Error("No response text from Gemini");
+    };
+
+    try {
+        return await attemptAnalysis(PRIMARY_MODEL);
+    } catch (error) {
+        // Fallback or rethrow
+        console.warn("Deep analysis failed.", error);
+        throw error;
+    }
+};
+
+/**
  * Step B: Retrieve/Generate Persona Details
  * "Orchestrator" creating detailed profiles based on the suggested types.
  * Supports "Standard" vs "Troll/Critical" modes.
@@ -338,15 +433,7 @@ export const generateCommentForPersona = async (apiKey: string, persona: Persona
             contents: prompt, // Send as string to ensure simple structure
             config: {
                 temperature: 1.0,
-                maxOutputTokens: 2048,
-                // USE ENUMS for Safety Settings to guarantee transmission 
-                safetySettings: [
-                    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-                    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-                    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-                    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-                    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
-                ]
+                maxOutputTokens: 2048
             }
         }, 3); // 3 Retries
 

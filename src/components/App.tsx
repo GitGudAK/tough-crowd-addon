@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import logo from '../logo.jpg';
 import { AddOnSDKAPI } from "https://new.express.adobe.com/static/add-on-sdk/sdk.js";
 import { VideoPlayer } from './VideoPlayer';
 import { CommentFeed } from './CommentFeed';
@@ -9,6 +10,8 @@ import { Settings } from './Settings';
 import { ProcessingState, LogEntry, Comment, VideoAnalysis, Persona, SimulationMode } from '../types';
 import { extractFramesFromVideo } from '../services/videoUtils';
 import { analyzeVideoFrames, generatePersonas, generateCommentForPersona, resetFallbackHistory } from '../services/geminiService';
+import { getSelectedVideo } from '../services/canvasService';
+import { Menu, Maximize2, Minimize2, MoreVertical, X, LogOut, Cpu } from 'lucide-react';
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
@@ -22,6 +25,8 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
     const [activePersonas, setActivePersonas] = useState<Persona[]>([]);
     const [simulationMode, setSimulationMode] = useState<SimulationMode>('standard');
     const [isInitializing, setIsInitializing] = useState(true);
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [isFullScreen, setIsFullScreen] = useState(false);
 
     // Load API Key from LocalStorage on mount
     useEffect(() => {
@@ -33,8 +38,10 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
     }, []);
 
     const handleSaveKey = (key: string) => {
+        console.log("App: handleSaveKey called", key);
         localStorage.setItem('gemini_api_key', key);
         setApiKey(key);
+        console.log("App: setApiKey called");
     };
 
     const addLog = (step: string, message: string) => {
@@ -45,6 +52,90 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
             timestamp: Date.now()
         }]);
     };
+
+    const handleSelectFromCanvas = async () => {
+        setProcessingState(ProcessingState.EXTRACTING_FRAMES); // Use a temporary state or add a new one specifically for retrieval
+        addLog('INGESTION', 'Attempting to retrieve video from Add-on selection...');
+
+        try {
+            const selection = await getSelectedVideo(addOnUISdk);
+
+            if (selection) {
+                // If it's a video blob, create a File and process usually
+                if (selection.type === 'video') {
+                    const file = new File([selection.blob], "canvas_video.mp4", { type: "video/mp4" });
+                    addLog('INGESTION', 'Success: Video retrieved from canvas.');
+                    handleVideoUpload(file);
+                }
+                // If it's an image (snapshot fallback), handle it as a single-frame analysis
+                else if (selection.type === 'image') {
+                    addLog('INGESTION', 'Success: Retrieved current frame (Static Analysis).');
+                    handleImageAnalysis(selection.blob);
+                }
+            } else {
+                addLog('ERROR', 'No content found in selection.');
+                setProcessingState(ProcessingState.IDLE);
+            }
+        } catch (error) {
+            addLog('ERROR', error instanceof Error ? error.message : 'Canvas retrieval failed');
+            setProcessingState(ProcessingState.IDLE);
+        }
+    };
+
+    const handleImageAnalysis = async (imageBlob: Blob) => {
+        if (!apiKey) return;
+
+        setVideoFile(null); // No video file to play
+        setComments([]);
+        setLogs([]);
+        setAnalysis(null);
+        setActivePersonas([]);
+
+        // Convert Blob to Base64
+        const reader = new FileReader();
+        reader.readAsDataURL(imageBlob);
+        reader.onloadend = async () => {
+            const base64data = reader.result as string;
+            // Remove prefix
+            const base64Content = base64data.split(',')[1];
+
+            try {
+                // Skip extraction, go straight to analysis
+                setProcessingState(ProcessingState.ANALYZING_VIDEO);
+                addLog('GEMINI_VLM', 'Sending single frame snapshot to Gemini 3.0...');
+
+                // Pass single frame as array
+                const videoAnalysis = await analyzeVideoFrames(apiKey, [base64Content]);
+                setAnalysis(videoAnalysis);
+                addLog('GEMINI_VLM', `Analysis Complete: Detected ${videoAnalysis.tone} tone.`);
+
+                await runSimulation(videoAnalysis, 'standard');
+            } catch (error) {
+                console.error(error);
+                setProcessingState(ProcessingState.ERROR);
+                addLog('ERROR', error instanceof Error ? error.message : 'Analysis failed');
+            }
+        };
+    };
+
+    const toggleFullScreen = async () => {
+        try {
+            if (!document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+                setIsFullScreen(true);
+            } else {
+                if (document.exitFullscreen) {
+                    await document.exitFullscreen();
+                    setIsFullScreen(false);
+                }
+            }
+        } catch (err) {
+            console.error("Fullscreen error:", err);
+            addLog('ERROR', `Fullscreen failed: ${(err as Error).message}`);
+        }
+    };
+
+    const [analysisMode, setAnalysisMode] = useState<'fast' | 'deep'>('fast');
 
     const handleVideoUpload = useCallback(async (file: File) => {
         if (!apiKey) return;
@@ -58,15 +149,29 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
         addLog('INGESTION', `Video loaded: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
         try {
-            // 1. Extract Frames
-            addLog('FRAME_EXTRACTOR', 'Sampling 10 high-res keyframes for VLM...');
-            const frames = await extractFramesFromVideo(file, 10);
-            addLog('FRAME_EXTRACTOR', `Extracted ${frames.length} keyframes.`);
+            let videoAnalysis: VideoAnalysis;
 
-            // 2. Analyze Video
-            setProcessingState(ProcessingState.ANALYZING_VIDEO);
-            addLog('GEMINI_VLM', 'Sending frames to Gemini 3.0...Deep Analysis');
-            const videoAnalysis = await analyzeVideoFrames(apiKey, frames);
+            if (analysisMode === 'fast') {
+                // 1. FAST MODE: Extract Frames
+                addLog('FRAME_EXTRACTOR', 'Fast Mode: Sampling 10 keyframes...');
+                const frames = await extractFramesFromVideo(file, 10);
+                addLog('FRAME_EXTRACTOR', `Extracted ${frames.length} keyframes.`);
+
+                // 2. Analyze Frames
+                setProcessingState(ProcessingState.ANALYZING_VIDEO);
+                addLog('GEMINI_VLM', 'Sending frames to Gemini 3.0...');
+                videoAnalysis = await analyzeVideoFrames(apiKey, frames);
+
+            } else {
+                // 1. DEEP MODE: Full Video
+                setProcessingState(ProcessingState.ANALYZING_VIDEO);
+                addLog('GEMINI_VLM', 'Deep Mode: Uploading full video to Gemini 3.0...');
+                addLog('GEMINI_VLM', 'This may take longer for temporal understanding...');
+                // Note: analyzeFullVideo needs to be imported
+                const { analyzeFullVideo } = await import('../services/geminiService');
+                videoAnalysis = await analyzeFullVideo(apiKey, file);
+            }
+
             setAnalysis(videoAnalysis);
             addLog('GEMINI_VLM', `Analysis Complete: Detected ${videoAnalysis.tone} tone.`);
             addLog('GEMINI_VLM', `Virality Score: ${videoAnalysis.virality.score}/100`);
@@ -79,7 +184,7 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
             setProcessingState(ProcessingState.ERROR);
             addLog('ERROR', error instanceof Error ? error.message : 'Unknown error occurred');
         }
-    }, [apiKey]);
+    }, [apiKey, analysisMode]);
 
     const runSimulation = async (videoAnalysis: VideoAnalysis, mode: SimulationMode) => {
         try {
@@ -109,6 +214,8 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
                     return { persona, ...result, success: true };
                 } catch (e) {
                     console.warn(`Failed to generate comment for ${persona.handle}`, e);
+                    // Log the failure to the UI so the user knows
+                    addLog('ERROR', `Failed to generate comment for @${persona.handle}`);
                     return { persona, text: "", isGenerated: false, success: false };
                 }
             });
@@ -121,6 +228,9 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
                 const result = await promise;
 
                 if (result.success) {
+                    // Log before setting state to verify data
+                    console.log("Adding comment:", result.text.substring(0, 20) + "...");
+
                     const newComment: Comment = {
                         id: generateId(),
                         persona: result.persona,
@@ -130,7 +240,11 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
                         isGenerated: result.isGenerated
                     };
 
-                    setComments(prev => [newComment, ...prev]);
+                    setComments(prev => {
+                        const updated = [newComment, ...prev];
+                        // console.log("Updated comments count:", updated.length);
+                        return updated;
+                    });
 
                     // Log source with specific error if present
                     if (result.isGenerated) {
@@ -171,30 +285,60 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
     return (
         <div className="flex flex-col h-screen bg-gray-950 overflow-hidden text-gray-100 font-sans">
             {/* Header */}
-            <header className="h-14 border-b border-gray-800 bg-gray-900/50 backdrop-blur flex items-center justify-between px-4 z-20 shrink-0">
-                <div className="flex items-center gap-2">
-                    <div className="w-6 h-6 rounded bg-gradient-to-br from-brand-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs shadow-lg shadow-brand-500/20">S</div>
-                    <h1 className="text-sm font-bold tracking-tight text-white">Synthevals<span className="text-brand-400">AddOn</span></h1>
+            <header className="h-14 border-b border-gray-800 bg-gray-900/50 backdrop-blur flex items-center justify-between px-4 z-20 shrink-0 relative">
+                <div className="flex items-center gap-3">
+                    <img src={logo} alt="Logo" className="w-8 h-8 rounded-lg shadow-lg shadow-brand-500/20" />
+                    <h1 className="text-sm font-bold tracking-tight text-white">Tough<span className="text-brand-400">Crowd</span></h1>
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {/* Full Screen Toggle */}
                     <button
-                        onClick={() => {
-                            localStorage.removeItem('gemini_api_key');
-                            setApiKey('');
-                        }}
-                        className="text-xs text-gray-400 hover:text-white"
+                        onClick={toggleFullScreen}
+                        className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                        title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
                     >
-                        Reset Key
+                        {isFullScreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
                     </button>
-                    <div className="px-2 py-0.5 rounded-full bg-gray-800 text-[10px] font-mono text-gray-400 border border-gray-700">
-                        Gemini 3.0 Pro
+
+                    {/* Hamburger Menu */}
+                    <div className="relative">
+                        <button
+                            onClick={() => setIsMenuOpen(!isMenuOpen)}
+                            className={`p-2 rounded-lg transition-colors ${isMenuOpen ? 'text-white bg-gray-800' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+                        >
+                            {isMenuOpen ? <X size={20} /> : <Menu size={20} />}
+                        </button>
+
+                        {/* Dropdown Menu */}
+                        {isMenuOpen && (
+                            <div className="absolute right-0 top-full mt-2 w-56 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl py-2 animate-in fade-in slide-in-from-top-2 z-50">
+                                <div className="px-4 py-2 border-b border-gray-800 mb-2">
+                                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Model</p>
+                                    <div className="flex items-center gap-2 text-brand-400 text-sm font-medium">
+                                        <Cpu size={14} />
+                                        <span>Gemini 3.0 Pro</span>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        localStorage.removeItem('gemini_api_key');
+                                        setApiKey('');
+                                        setIsMenuOpen(false);
+                                    }}
+                                    className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-800 flex items-center gap-2 transition-colors"
+                                >
+                                    <LogOut size={16} />
+                                    Reset API Key
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             </header>
 
             {/* Main Layout */}
-            <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+            <main className="flex-1 flex flex-col md:flex-row overflow-hidden relative" onClick={() => isMenuOpen && setIsMenuOpen(false)}>
 
                 {/* Left Zone: Video, Stats, Logs */}
                 <div className="flex-1 flex flex-col relative h-full min-w-0">
@@ -206,10 +350,33 @@ const App = ({ addOnUISdk }: { addOnUISdk: AddOnSDKAPI }) => {
                             <div className="flex flex-col gap-6 items-start justify-center">
                                 {/* Video Player Container */}
                                 <div className="flex-1 w-full flex flex-col">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex bg-gray-900 p-1 rounded-lg border border-gray-800">
+                                            <button
+                                                onClick={() => setAnalysisMode('fast')}
+                                                className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${analysisMode === 'fast'
+                                                    ? 'bg-gray-800 text-white shadow-sm'
+                                                    : 'text-gray-500 hover:text-gray-300'
+                                                    }`}
+                                            >
+                                                Fast (Frames)
+                                            </button>
+                                            <button
+                                                onClick={() => setAnalysisMode('deep')}
+                                                className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${analysisMode === 'deep'
+                                                    ? 'bg-brand-900/50 text-brand-400 border border-brand-500/30 shadow-sm'
+                                                    : 'text-gray-500 hover:text-gray-300'
+                                                    }`}
+                                            >
+                                                Deep (Video)
+                                            </button>
+                                        </div>
+                                    </div>
                                     <VideoPlayer
                                         videoFile={videoFile}
-                                        onUpload={handleVideoUpload}
                                         processingState={processingState}
+                                        onSelectFromCanvas={handleSelectFromCanvas}
+                                        onUpload={handleVideoUpload}
                                     />
                                     {/* Active Personas Deck */}
                                     {activePersonas.length > 0 && (

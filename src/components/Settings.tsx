@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import logo from '../logo.jpg';
 
 interface SettingsProps {
     onSave: (key: string) => void;
@@ -9,8 +10,12 @@ export const Settings: React.FC<SettingsProps> = ({ onSave }) => {
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
+        console.log("Settings: Submit clicked", key);
         if (key.trim()) {
+            console.log("Settings: Calling onSave");
             onSave(key.trim());
+        } else {
+            console.warn("Settings: Key is empty");
         }
     };
 
@@ -18,19 +23,20 @@ export const Settings: React.FC<SettingsProps> = ({ onSave }) => {
         <div className="flex flex-col items-center justify-center h-full p-8 bg-gray-950 text-gray-100">
             <div className="max-w-md w-full space-y-8">
                 <div className="text-center">
-                    <div className="mx-auto h-12 w-12 bg-brand-500 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20 mb-4">
-                        <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11.536 11l-3.233 3.233a1 1 0 01-1.414 0l-1.414-1.414a1 1 0 010-1.414L8.707 7.293 15 7z" />
-                        </svg>
+                    <div className="mx-auto mb-6">
+                        <img src={logo} alt="Tough Crowd Logo" className="h-24 mx-auto rounded-xl shadow-2xl shadow-brand-500/20" />
                     </div>
                     <h2 className="text-3xl font-extrabold text-white">Setup Gemini API</h2>
-                    <p className="mt-2 text-sm text-gray-400">
-                        Synthevals requires a Google Gemini API Key to function.
+                </div>
+
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 shadow-2xl max-w-md w-full animate-in fade-in slide-in-from-bottom-8 duration-700">
+                    <p className="text-gray-400 text-sm mb-6 text-center leading-relaxed">
+                        Tough Crowd requires a Google Gemini API Key to function.
                         Your key is stored locally in your browser.
                     </p>
                 </div>
 
-                <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+                <div className="mt-8 space-y-6">
                     <div className="rounded-md shadow-sm -space-y-px">
                         <div>
                             <label htmlFor="api-key" className="sr-only">API Key</label>
@@ -49,7 +55,8 @@ export const Settings: React.FC<SettingsProps> = ({ onSave }) => {
 
                     <div>
                         <button
-                            type="submit"
+                            type="button"
+                            onClick={(e) => handleSubmit(e as any)}
                             disabled={!key}
                             className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-brand-600 hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                         >
@@ -61,7 +68,7 @@ export const Settings: React.FC<SettingsProps> = ({ onSave }) => {
                             Save Key & Continue
                         </button>
                     </div>
-                </form>
+                </div>
 
                 <div className="text-center text-xs text-gray-500">
                     <p>

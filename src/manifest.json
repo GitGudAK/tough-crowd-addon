@@ -1,6 +1,6 @@
 {
     "testId": "e78e822c-f14d-4d5a-9791-c651b6bbf7f8",
-    "name": "Synthevals Addon",
+    "name": "Tough Crowd AddOn",
     "version": "1.0.0",
     "manifestVersion": 2,
     "requirements": {
@@ -15,7 +15,15 @@
         {
             "type": "panel",
             "id": "panel1",
-            "main": "index.html"
+            "main": "index.html",
+            "permissions": {
+                "sandbox": [
+                    "allow-popups",
+                    "allow-popups-to-escape-sandbox",
+                    "allow-downloads",
+                    "allow-presentation"
+                ]
+            }
         }
     ]
 }
